@@ -11,49 +11,66 @@ class Field:
     Defines a field with a label and preconditions
     """
     label: str
-    value = None
     precondition: Callable[[Any], bool] = None
 
-    def __init__(self, label, precondition=None, value=None):
+    def __init__(self, label, precondition=None):
         self.label = label
         self.precondition = precondition
-        self.value = value
-
-    def __repr__(self):
-        return str(self.value)
 
 
 # Record and supporting classes here
 class RecordMeta(type):
-    def __new__(cls, name, bases, attr):
+    def __new__(cls, name, bases, attrs, **kwargs):
         # Implement the class creation by manipulating the attr dictionary
-        return super(RecordMeta, cls).__new__(cls, name, bases, attr)
+        new_attrs = {}
+        for att_name, attr_value in attrs.items():
+            if not att_name.startswith('__'):  # Ignore built-in attributes
+                new_attrs[att_name] = attrs[att_name]
+
+        new_annotations = {}
+        for base_class in bases:
+            for parent_class in base_class.__mro__:
+                if '__annotations__' in parent_class.__dict__ is not None:
+                    new_annotations.update(parent_class.__annotations__)
+
+        attrs.update(new_attrs)
+        attrs.get('__annotations__', {}).update(new_annotations)
+
+        return super(RecordMeta, cls).__new__(cls, name, bases, attrs)
 
 
 class Record(metaclass=RecordMeta):
+    fields = {}
+
     def __setattr__(self, attr, value):
-        if hasattr(self, attr) and self.__getattribute__(attr).value is not None:
+        """
+        Overrides attribute's field object assignment with actual field value.
+        e.g., name = Field(label=...) becomes name = 'James'
+        """
+        if hasattr(self, attr) and not isinstance(getattr(self, attr), Field):
             raise AttributeError("Cannot modify attribute after initialization")
         else:
-            new_value = self.__getattribute__(attr)
-            new_value.value = value
+            new_value = value
+            self.fields[attr] = getattr(self, attr) # Save for later
             super().__setattr__(attr, new_value)
 
     def __init__(self, **kwargs):
         params = list(self.__annotations__.keys())
         for parameter in kwargs:
+            # Check if parameter is class attribute
             if parameter in params:
                 # verify correct type
                 if self.__annotations__.get(parameter) is type(kwargs.get(parameter)):
-                    # self.__setattr__(parameter, kwargs.get(parameter))
+                    # Evaluate precondition
+                    precon = getattr(self, parameter).precondition
+                    if precon is not None and not precon(kwargs.get(parameter)):
+                        raise TypeError(f"Parameter {parameter} = {kwargs.get(parameter)} failed precondition")
+                    # Save field value
+                    setattr(self, parameter, kwargs.get(parameter))
                     params.remove(parameter)
                 else:
                     raise TypeError(f"Invalid param type, expected {self.__annotations__.get(parameter)}, got "
                                     f"{type(kwargs.get(parameter))}")
-                # Evaluate precondition
-                precon = self.__getattribute__(parameter).precondition
-                if precon is not None and not precon(kwargs.get(parameter)):
-                    raise TypeError(f"Parameter {parameter} = {kwargs.get(parameter)} failed precondition")
             else:
                 raise TypeError("Unknown parameter '%s'" % parameter)
 
@@ -63,9 +80,17 @@ class Record(metaclass=RecordMeta):
     def __str__(self):
         formatted_string = f"{self.__class__.__name__}("
         for attr in self.__annotations__.keys():
-            formatted_string += f"\n # {self.__getattribute__(attr).label} \n {attr}={self.__getattribute__(attr).value} \n"
+            formatted_string += f"\n  # {self.fields.get(attr).label}\n  {attr}={attr_friendly_display(getattr(self, attr))}\n"
         formatted_string += ")"
         return formatted_string
+
+
+def attr_friendly_display(attribute_value):
+    if isinstance(attribute_value, str):
+        return f"'{attribute_value}'"
+    else:
+        return str(attribute_value)
+
 
 
 # Usage of Record
@@ -143,7 +168,4 @@ class RecordTests(TestCase):
 
 
 if __name__ == '__main__':
-    # unittest.main()
-    # Person(name="JAMES", age=34, income=24000.0)
-    print(Person.name)
-    Person(name="JAMES", age=110, income=24000.0)
+    unittest.main()
